@@ -5,7 +5,7 @@ Radix timers: algorithm for timer facility in embedded systems
 Intro
 -----
 
-There is a great (paper)[http://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf] describing various strategies of timer implementation. The brief summary is that there is the following common algorithms used:
+There is a great [paper](http://www.cs.columbia.edu/~nahum/w6998/papers/sosp87-timing-wheels.pdf) describing various strategies of timer implementation. The brief summary is that there is the following common algorithms used:
 
 1. Straightforward - single unordered list of timers, O(n) per tick bookkeeping
 2. Ordered list - single ordered list, O(n) on insertion
@@ -44,7 +44,7 @@ One possible optimization for scheme 7 is to avoid multiple lists at each hierar
 
 However, this algorithm suffers from the same issue as scheme 7: when the system tick counter overflows we have to check all the queues and timers. Also, the code is more complex compared to scheme 6 since we have to use nested loops to check all hierarchies and timers at each level.
 
-This leads to another optimization: to use (Gray code)[https://en.wikipedia.org/wiki/Gray_code] for the both system ticks and timer's target timeouts. The key observation here is that we're not interested in some sequence of hierarchy handling, instead we need flip of all bits that are different between tick counter and timer's timeout. While Gray encoding is not positional it flips bits with frequency roughly equal to the usual binary code. This is because Gray engoding does not change the most significant bit. So it is a good idea to place timer in queue corresponding to the most significant bit.
+This leads to another optimization: to use [Gray code](https://en.wikipedia.org/wiki/Gray_code) for the both system ticks and timer's target timeouts. The key observation here is that we're not interested in some sequence of hierarchy handling, instead we need flip of all bits that are different between tick counter and timer's timeout. While Gray encoding is not positional it flips bits with frequency roughly equal to the usual binary code. This is because Gray engoding does not change the most significant bit. So it is a good idea to place timer in queue corresponding to the most significant bit.
 
 Gray encoding guarantees that no more than 1 bit will flip on every increment so we have to check exactly one queue on each tick as in the case of scheme 6. While the worst-case latency stays the same - O(n) when all the timers are inserted into the same list occasionally. But unlike scheme 7 this is just a possibility, not a guarantee.
 
