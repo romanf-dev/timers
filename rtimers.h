@@ -25,6 +25,7 @@ struct list_t {
 #define list_init(head) ((head)->next = (head)->prev = (head))
 #define list_empty(head) ((head)->next == (head))
 #define list_first(head) ((head)->next)
+#define list_last(head) ((head)->prev)
 #define list_entry(p, type, member) \
     ((type*)((char*)(p) - (size_t)(&((type*)0)->member)))
 
@@ -45,26 +46,23 @@ static inline void list_unlink(struct list_t* node) {
 }
 
 typedef uint32_t timeout_t;
-typedef uint32_t gray_code_t;
 
 struct timer_context_t {
     struct list_t subscribers[NQUEUE];
     timeout_t ticks;
-    gray_code_t gray_ticks; /* Equal to ticks but in Gray code. */
 };
 
 struct timer_t {
     struct timer_context_t* parent;
     void (*func)(struct timer_t* self, void* arg);
     void* arg;
-    gray_code_t gray_timeout;
+    timeout_t timeout;
     struct list_t link;
 };
 
 void timer_context_init(struct timer_context_t* context) {
     assert(context != 0);
     context->ticks = 0;
-    context->gray_ticks = 0;
 
     for (unsigned i = 0; i < NQUEUE; ++i) {
         list_init(&context->subscribers[i]);
@@ -83,65 +81,61 @@ void timer_init(
     timer->arg = arg;
 }
 
-static inline gray_code_t to_gray_code(timeout_t x) {
-    return x ^ (x >> 1);
-}
-
 /*
- * Return the most significant different bit between two values.
- * Since x != y, this bit is always exist.
+ * Returns the index of the most significant bit which is different between
+ * old and new values if the bit is in range 0..NQUEUE. Otherwise returns
+ * maximum index NQUEUE-1.
  */
-static inline unsigned diff_msb(gray_code_t x, gray_code_t y) {
-    assert(x != y);
-    const gray_code_t diff_bits = x ^ y;
-    const unsigned int width = sizeof(gray_code_t) * CHAR_BIT;
-    const unsigned int msb = width - CLZ(diff_bits) - 1;
-    return (msb < NQUEUE) ? msb : NQUEUE - 1;
+static inline unsigned diff_msb(timeout_t oldvalue, timeout_t newvalue) {
+    assert(oldvalue != newvalue);
+    const timeout_t diff_bits = newvalue ^ oldvalue;
+    const timeout_t mask = (1U << NQUEUE) - 1;
+    const timeout_t lo = diff_bits & mask;
+    const timeout_t hi = diff_bits & ~mask;
+    const unsigned width = sizeof(timeout_t) * CHAR_BIT;
+    const unsigned msb = width - CLZ(lo) - 1;
+    return hi ? NQUEUE - 1 : msb;
 }
 
 /*
- * Inserts the timer into queue corresponding to the most significant bit
- * that is different between Gray-encoded timeout of the timer and the
- * Gray-encoded current tick counter.
- * This function has O(1) time to complete.
+ * When the delay is added to the current tick counter, some bits of the latter
+ * are changed. Timer will not expire until all the different bits flip, so
+ * insert the timer in the queue corresponding to the most significant one.
  */
 void timer_set(struct timer_t* timer, const timeout_t delay) {
     assert((delay != 0) && (delay < INT32_MAX));
     struct timer_context_t* const context = timer->parent;
     const timeout_t timeout = context->ticks + delay;
-    const gray_code_t gray_timeout = to_gray_code(timeout);
-    const unsigned qindex = diff_msb(context->gray_ticks, gray_timeout);
-    timer->gray_timeout = gray_timeout;
+    const unsigned qindex = diff_msb(context->ticks, timeout);
+    timer->timeout = timeout;
     list_append(&context->subscribers[qindex], &timer->link);
 }
 
-/* 
- * On each tick exactly one bit may be changed (Hamming distance between two 
- * consecutive Gray-encoded value is 1). The corresponding queue N contains 
- * timers that wait until the N bit changes, so there are two possibility for 
- * each timer: it is either reached its timeout or should be moved to another
- * queue in case when there are other bits that are different between target
- * timeout and the tick counter.
- * While this function requires O(n) time to complete, it may be implemented to
- * have O(1) interrupt latency unlike the case when all the timers reside in
- * sorted queues. Doubly-linked next/prev list may be copied to local list
- * and further procesing may be performed step-by-step with interrupt window.
+/*
+ * Determine the most significant changed bit between old and new tick counter
+ * values. Examine timers which are in the corresponding queue. Since timers
+ * with large timeouts may be re-inserted into the same queue, we should handle
+ * only the timers which were inserted before this function call.
  */
 void timer_context_tick(struct timer_context_t* context) {
-    const gray_code_t new_gray_ticks = to_gray_code(++context->ticks);
-    const unsigned int qindex = diff_msb(context->gray_ticks, new_gray_ticks);
-    context->gray_ticks = new_gray_ticks;
+    const unsigned int oldticks = context->ticks++;
+    const unsigned int qindex = diff_msb(oldticks, context->ticks);
+    struct list_t* const last = list_last(&context->subscribers[qindex]);
 
     while (!list_empty(&context->subscribers[qindex])) {
         struct list_t* const head = list_first(&context->subscribers[qindex]);
         struct timer_t* const timer = list_entry(head, struct timer_t, link);
         list_unlink(head);
 
-        if (timer->gray_timeout == new_gray_ticks) {
+        if (timer->timeout == context->ticks) {
             timer->func(timer, timer->arg);
         } else {
-            const unsigned qnext = diff_msb(timer->gray_timeout, new_gray_ticks);
+            const unsigned qnext = diff_msb(timer->timeout, context->ticks);
             list_append(&context->subscribers[qnext], &timer->link);
+        }
+
+        if (head == last) {
+            break;
         }
     }
 }
